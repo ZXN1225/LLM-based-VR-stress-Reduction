@@ -108,7 +108,8 @@ class FilterAgent:
         for scene in generated_scenes:
             print(f"🧐 Multidimensional evaluation scenario {scene['step']}...")
             try:
-                img = Image.open(scene['image_path']).convert("RGB")
+                ori_img = Image.open(scene['image_path']).convert("RGB")
+                img = ori_img.resize((1024, 512), Image.Resampling.LANCZOS)
 
                 # DS Score (50%)
                 ds_score = self._calculate_ds_score(img)
