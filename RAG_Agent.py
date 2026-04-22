@@ -16,6 +16,38 @@ class RAGAgent:
             embedding_function=self.emb_fn
         )
 
+    def _clinical_reasoning(self, user_input):
+        """
+        Transform user input to clinical index
+        """
+        reasoning_prompt = f"""
+        You are a professional Psychologist and Clinical Environment Analyst/Strategist. 
+        Analyze the user's stress: "{user_input}"
+
+        According to SRT (Stress Reduction Theory) and ART (Attention Restoration Theory):
+        1. Identify the stress type (e.g., Cognitive Fatigue, High Anxiety, Seasonal Depression .... - Define this by yourself).
+        2. Define target environmental features:
+           - Lighting condition: Such as warmth or intensity.
+           - Complexity Level
+           - Key Psychological Elements: (e.g., Prospect, Refuge, Soft Fascination ..... - Define this by yourself.)
+        3. Give a clinical stress analysis based on your psychological knowledge and analysis to user input.
+        4. Generate a 'Search Query' that combines these professional terms.
+
+        OUTPUT ONLY JSON:
+        {{
+          "stress_analysis": "...",
+          "target_physics": {{"kelvin_range": "", "complexity": "", "...":"..."}},
+          "search_query": "e.g., tranquil nature with golden hour warm lighting, low complexity, soft fascination elements"
+        }}
+        The target_physics contains any elements that you think is helpful for RAG agent to search.
+        """
+        response = self.client.chat.completions.create(
+            model="gpt-4o",
+            messages=[{"role": "user", "content": reasoning_prompt}],
+            response_format={"type": "json_object"}
+        )
+        return json.loads(response.choices[0].message.content)
+
     def get_intervention_plan(self, user_input):
         """
         Agent core logic:
@@ -24,10 +56,13 @@ class RAGAgent:
         -> Output a JSON plan
         """
 
+        clinical_insight = self._clinical_reasoning(user_input)
+        hybrid_query = f"User Need: {user_input}. Therapeutic Target: {clinical_insight.get('search_query', '')}"
+
         # RAG Search
         search_results = self.collection.query(
-            query_texts=[user_input],
-            n_results=10,
+            query_texts=[hybrid_query],
+            n_results=8,
             include=["documents", "metadatas"]
         )
 
@@ -46,6 +81,7 @@ class RAGAgent:
                 f"Colorfulness={meta.get('colorfulness', 0):.1f}\n"
                 f"Sharpness={meta.get('sharpness', 0):.1f}\n"
                 f"Contrast={meta.get('contrast', 0):.1f}\n"
+                f"Complexity={meta.get('complexity', 0):.1f}\n"
                 f"Objects: {meta.get('objects', 'N/A')}"
                 f"  Filename: {meta['filename']}"
             )
@@ -55,10 +91,15 @@ class RAGAgent:
 
         # Define the system prompt
         system_prompt = f"""
-        You are a VR Stress Management Expert. You will receive a student's stress description 
-        and matching examples from our validated 360° nature database - Database Context:\n{context_str}.
+        You are a VR Stress Management Expert. You will receive a student's stress description {user_input}
+        and matching examples from our validated 360° nature database:
+        [CLINICAL STRATEGY]: 
+        Based on analysis, the user is experiencing {clinical_insight['stress_analysis']}. 
+        Target features: {json.dumps(clinical_insight['target_physics'])}.
 
-        TASK: Create a 10-minute (600s) sequence of 15 scenes and 2 relative music.
+        [DATABASE CONTEXT]: {context_str}
+
+        TASK: Create a 10-minute (600s) sequence of 5 scenes and 2 relative music.
 
         SCIENTIFIC CONSTRAINTS:
         - Use the information from the database examples as a baseline for new generation.
@@ -75,12 +116,12 @@ class RAGAgent:
         - The music provided should be related to image conditions.(e.g., 'Warm Ambient' for 'Warm' lighting)
         - Target: Stress relief for users.
 
-        OUTPUT FORMAT: Return ONLY a JSON object with:
+        OUTPUT FORMAT: Return ONLY a valid **JSON** object with:
         {{
             "scenes": [
                 {{
                     "step": 1,
-                    "duration": 60,
+                    "duration": (e.g., 60),
                     "image_prompt": "detailed prompt for image generation model",
                     "target_kelvin": (e.g., 3500),
                     "intensity": (e.g., 1.2)), 
@@ -94,7 +135,7 @@ class RAGAgent:
         """
 
         # Execution reasoning
-        user_context = f"Student Input: {user_input}\n\n"
+        user_context = f"User Input: {user_input}\n\n"
 
         response = self.client.chat.completions.create(
             model="gpt-4o",
@@ -105,6 +146,59 @@ class RAGAgent:
             response_format={"type": "json_object"}
         )
 
+        return json.loads(response.choices[0].message.content), clinical_insight
+
+    def refine_intervention_plan(self, original_scene, feedback, user_input, original_insight=None):
+        """
+        Skill: Strategic Correction.
+        Re-queries the database based on the therapist's failure feedback.
+        """
+        refinement_query = (
+            f"User Original Need: {user_input}. "
+            f"Correction needed: {feedback.get('refinement_suggestion', '')}. "
+            f"Focus on environmental features that avoid: {feedback.get('clinical_critique', '')}"
+        )
+
+        # Re-search the vector DB for a more suitable environment
+        results = self.collection.query(query_texts=[refinement_query], n_results=3)
+        context = results['documents'][0]
+
+        system_prompt = f"""
+        You are a Clinical Strategy Refiner. The previous image generation FAILED the therapist's audit:{feedback['clinical_critique']}
+        [ORIGINAL CLINICAL GOAL]: {json.dumps(original_insight.get('target_physics', {})) if original_insight else "None"}
+        Based on the refinement suggestion:{feedback['refinement_suggestion']} and user's original input, 
+        your task is to REWRITE the image prompt to fix the issues while staying under the token limit.
+        STRICT RULES:
+        1. COMPRESSION: Do not simply add feedback to the old prompt. REWRITE it into a single, cohesive sentence.
+        2. TOKEN LIMIT: The total prompt MUST NOT exceed 60 tokens to ensure compatibility with CLIP.
+        3. REMOVE REDUNDANCY: Delete flowery adjectives. Instead of "a sense of calm and comforting stillness," use "serene, tranquil."
+        4. STRUCTURE: Keep the most important visual changes at the BEGINNING.
+        5. NO WEIGHTS: Do not use (word:weight) syntax here; the Production Agent will handle that.
+              
+        The output format should remain the same **JSON** format:
+        {{
+            "scenes": [
+                {{
+                    "step": 1,
+                    "duration": (e.g., 60),
+                    "image_prompt": "detailed prompt for image generation model",
+                    "target_kelvin": (e.g., 3500),
+                    "intensity": (e.g., 1.2)), 
+                }}
+            ]
+        }}     
+        """
+
+        response = self.client.chat.completions.create(
+            model="gpt-4o",
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user",
+                 "content": f"Previous: {original_scene}. New Context from database: {context}. Original user input: {user_input}"},
+            ],
+            response_format={"type": "json_object"}
+        )
+        # Returns a single refined scene object
         return json.loads(response.choices[0].message.content)
 
 
