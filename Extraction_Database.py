@@ -76,6 +76,22 @@ def estimate_kelvin(r, g, b):
         return 6500
 
 
+def calculate_visual_complexity(image):
+    """
+    """
+    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+    dft = np.fft.fft2(gray)
+    dft_shift = np.fft.fftshift(dft)
+    magnitude_spectrum = 20 * np.log(np.abs(dft_shift) + 1)
+
+    h, w = gray.shape
+    cx, cy = w // 2, h // 2
+    r = 30
+    magnitude_spectrum[cy - r:cy + r, cx - r:cx + r] = 0
+
+    high_freq_score = np.mean(magnitude_spectrum)
+    return float(high_freq_score)
+
 def get_lighting_stats(image_path):
     """
     Advanced Physical Feature Extraction:
@@ -93,31 +109,32 @@ def get_lighting_stats(image_path):
         return 0, "unknown"
 
     # --- Basic physical quantities ---
-    lab = cv2.cvtColor(img, cv2.COLOR_BGR2Lab)
+    h, w, _ = img.shape
+    y_start, y_end = int(h * 0.1), int(h * 0.9)
+    cut = img[y_start:y_end, :, :]
+    lab = cv2.cvtColor(cut, cv2.COLOR_BGR2Lab)
     l, a, b_channel = cv2.split(lab)
     brightness = np.mean(l)
     contrast = np.std(l)
+    complexity = calculate_visual_complexity(cut)
 
     # --- Kelvin's estimation ---
-    # Extract the brightest 3% of pixels (simulating the search for the sun or core light source)
-    threshold = np.percentile(l, 97)
-    mask = l >= threshold
-    bright_pixels = img[mask]
+    mask = (l> np.percentile(l, 20)) & (l < np.percentile(l, 90))
+    if not np.any(mask):
+        return 6500.0
 
-    if len(bright_pixels) > 0:
-        avg_bgr = np.mean(bright_pixels, axis=0)
-        kelvin = estimate_kelvin(avg_bgr[2], avg_bgr[1], avg_bgr[0])
-    else:
-        kelvin = 6500
+    valid_pixels = cut[mask]
+    median_bgr = np.median(valid_pixels, axis=0)
+    kelvin = estimate_kelvin(median_bgr[2], median_bgr[1], median_bgr[0])
 
     # --- Other quantitative indicators ---
-    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+    gray = cv2.cvtColor(cut, cv2.COLOR_BGR2GRAY)
     sharpness = cv2.Laplacian(gray, cv2.CV_64F).var()
-    (B, G, R) = cv2.split(img.astype("float"))
+    (B, G, R) = cv2.split(cut.astype("float"))
     colorfulness = np.sqrt(np.var(R - G) + np.var(0.5 * (R + G) - B)) + 0.3 * np.sqrt(
     np.mean(R - G) ** 2 + np.mean(0.5 * (R + G) - B) ** 2)
 
-    return float(brightness), float(contrast), float(sharpness), float(colorfulness), float(kelvin)
+    return float(brightness), float(contrast), float(sharpness), float(colorfulness), float(kelvin), float(complexity)
 
 
 def process_and_store_dataset(folder_path):
@@ -127,13 +144,24 @@ def process_and_store_dataset(folder_path):
 
     valid_extensions = (".jpg", ".png", ".jpeg", ".tif", ".tiff")
 
-    system_prompt = (
-        "You are a professional image analyst. Analyze this 360-degree VR therapy image. "
-        "Focus on: 1. Lighting_Tendency (Warm/Cool/Neutral/.... You can decide based on sunlight condition, any light source or anything that can affect the lighting tendency of the picture "
-        "2. Environment type. 3. Emotional Mood Tags(1-3). 4. Objects:'List 3-5 key natural elements'"
-        "Output ONLY a JSON object: "
-        "{'lighting': 'Warm/Cool/Neutral', 'environment': '...', 'mood': '...', 'simple description': '...', 'objects': ''}"
-    )
+    system_prompt = """
+         You are a Clinical Environment Analyst specializing in Environmental Psychology.
+         Analyze the image and provide a JSON description for future therapy
+         Focus on: 
+         1. lighting: Subjective warmth and intensity. (You can decide based on sunlight condition, any light source or anything that can affect the lighting tendency of the picture.)
+         2. environment: Type of nature.
+         3. mood: 1-3 emotional tags.
+         4. objects: List 3-5 key natural elements.
+         5. psychological elements or analysis: Your perspective regarding psychological knowledge (e.g, SRT and ART), such as Prospect, Refuge, Complexity, Soft_Fascination, Being Away, .etc.
+         Output ONLY a JSON object: "
+         {
+          "lighting": "..."
+          "environment": "...",
+          "mood": "...",
+          "objects": "...","
+          "psychological": "{"prospect": "...", .....}",        
+}
+    """
 
     for filename in os.listdir(folder_path):
         if filename.lower().endswith(valid_extensions):
@@ -158,23 +186,24 @@ def process_and_store_dataset(folder_path):
                     )
                     semantic = json.loads(response.choices[0].message.content)
 
-                    bright, contrast, sharp, color_score, kelvin = get_lighting_stats(path)
+                    bright, contrast, sharp, color_score, kelvin, complexity = get_lighting_stats(path)
 
                     # Store to vector database
                     collection.add(
                         documents=[json.dumps(semantic)],
                         metadatas=[{
                             "filename": filename,
-                            "temp_tendency": semantic['lighting'].lower(),
                             "brightness": bright,
                             "contrast": contrast,
                             "sharpness": sharp,
                             "colorfulness": color_score,
+                            "complexity": complexity,
+                            "lighting": semantic['lighting'].lower(),
                             "environment": semantic['environment'],
                             "mood": semantic['mood'],
                             "objects": semantic['objects'],
+                            "psychological": json.dumps(semantic['psychological'], ensure_ascii=False),
                             "estimated_kelvin": kelvin,
-                            "is_optimized_target": True if 3000 <= kelvin <= 4500 else False
                         }],
                         ids=[filename]
                     )
@@ -185,4 +214,5 @@ def process_and_store_dataset(folder_path):
                     print(f"❌ Error processing {filename}: {e}")
 
 
-process_and_store_dataset("./PictureData")
+if __name__ == "__main__":
+    process_and_store_dataset("./PictureData")
