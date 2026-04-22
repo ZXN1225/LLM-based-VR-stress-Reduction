@@ -33,10 +33,11 @@ class ProductionAgent:
         self.template_path = template_path
         self.device = "cuda" if torch.cuda.is_available() else "cpu"
         self.dtype = torch.bfloat16 if self.device == "cuda" else torch.float32
-        #self.depth_estimator = pipeline("depth-estimation", model="Intel/dpt-large", device=self.device)
 
-        self.custom_lora_path = "./models/lora/MyHighResPano_SDXL-000005.safetensors"
+        self.custom_lora_path = "./models/lora/NewLoRA.safetensors"
         self.upscaler_model_path = './models/realesrgan/RealESRGAN_x4plus.pth'
+
+        self.cached_control_img = self._prepare_control_image(template_path)
 
         self._init_models()
         self._init_upscaler()
@@ -110,8 +111,8 @@ class ProductionAgent:
         self.control_pipe.vae.to(dtype=torch.bfloat16)
         self.inpaint_pipe.vae.to(dtype=torch.bfloat16)
 
-        self.control_pipe.enable_sequential_cpu_offload()
-        self.inpaint_pipe.enable_sequential_cpu_offload()
+        self.control_pipe.enable_model_cpu_offload()
+        self.inpaint_pipe.enable_model_cpu_offload()
 
         self.control_pipe.enable_attention_slicing()
         self.inpaint_pipe.enable_attention_slicing()
@@ -142,7 +143,7 @@ class ProductionAgent:
         width, height = 1024, 512
         mask = np.zeros((height, width), dtype=np.uint8)
 
-        horizon_y = int(height * 0.5)
+        horizon_y = int(height * 0.45)
         buffer_zone = int(height * 0.05)
         start_y = horizon_y + buffer_zone
 
@@ -150,7 +151,8 @@ class ProductionAgent:
             color = int(255 * (y - start_y) / (height - start_y))
             mask[y, :] = color
 
-        mask[:int(height * 0.1), :] = 0
+        mask[:int(height * 0.12), :] = 0
+        mask[int(height * 0.92):, :] = 0
 
         depth_rgb = cv2.cvtColor(mask, cv2.COLOR_GRAY2RGB)
         return Image.fromarray(depth_rgb)
@@ -172,7 +174,7 @@ class ProductionAgent:
         mask[:, center_start:center_end] = 255
 
         mask_pil = Image.fromarray(mask)
-        mask_blurred = mask_pil.filter(ImageFilter.GaussianBlur(radius=18))
+        mask_blurred = mask_pil.filter(ImageFilter.GaussianBlur(radius=20))
 
         refine_prompt = (f"{prompt}, seamless 360 view, ultra-detailed landscape, "
                          f"continuous horizontal line, no seams, cinematic photorealistic")
@@ -184,8 +186,8 @@ class ProductionAgent:
             mask_image=mask_blurred,
             width=1024,
             height=512,
-            num_inference_steps=30,
-            strength=0.45,
+            num_inference_steps=20,
+            strength=0.38,
         ).images[0]
 
         # rollback
@@ -194,33 +196,33 @@ class ProductionAgent:
 
         return Image.fromarray(final_np)
 
-    def generate_image(self, prompt, step_id):
+    async def generate_image(self, prompt, step_id, folder="static/base"):
         """ Generate custom 360 pictures with the entire pipeline """
         print(f"Starting Production for Scene {step_id}...")
 
-        boosted_prompt = ", ".join([f"({word.strip()}:1.5)" for word in prompt.split(',') if word.strip()])
-        full_prompt = (f"mypano_style, {boosted_prompt}, 360 panorama, ultra-high definition photography, "
-                       f"8K, seamless, HDR, photorealistic, <s0><s1>")
+        boosted_prompt = ", ".join([f"({word.strip()}:1.2)" for word in prompt.split(',') if word.strip()])
+        full_prompt = (f"mypano_style, <s0><s1>, {boosted_prompt}, 360 panorama, ultra-high definition photography, "
+                       f"8K, photorealistic, seamless, eye-level view")
         neg_prompt = ("grid, tiling, blocky, distorted, deformed horizon, vertical lines, tiling, watermark, "
                       "blurry, ghosting, grey sky, flat color, color overflow, banding, compression artifacts,"
-                      "grass on zenith, trees in sky, person, crowd")
-
-        control_img = self._prepare_control_image(self.template_path)
+                      "nadir, zenith, polar distortion, pinched top, swirl, person, crowd, buildings")
 
         flush()
 
         try:
-            latents = self.control_pipe(
+            output = self.control_pipe(
                 prompt=full_prompt,
                 negative_prompt= neg_prompt,
-                image=control_img,
+                image=self.cached_control_img,
                 controlnet_conditioning_scale=0.25,
                 width=1024,
                 height=512,
                 num_inference_steps=35,
                 guidance_scale=6.5,
                 output_type = "latent",
-            ).images
+            )
+            latents = output.images
+            del output
 
             latents = latents.to(dtype=torch.bfloat16)
 
@@ -228,42 +230,31 @@ class ProductionAgent:
                 scaled_latents = latents / self.control_pipe.vae.config.scaling_factor
                 image_tensor = self.control_pipe.vae.decode(scaled_latents, return_dict=False)[0]
 
+                top_avg = image_tensor[:, :, 0, :].mean(dim=-1, keepdim=True).repeat(1, 1, 3, 1024)
+                image_tensor[:, :, 0:3, :] = top_avg[:, :, 0:3, :]
+
+                bottom_avg = image_tensor[:, :, -1, :].mean(dim=-1, keepdim=True).repeat(1, 1, 5, 1024)
+                image_tensor[:, :, -5:, :] = bottom_avg[:, :, -5:, :]
+
                 image_tensor[:, :, :, 0] = image_tensor[:, :, :, 2]
                 image_tensor[:, :, :, -1] = image_tensor[:, :, :, -3]
 
                 base_img = self.control_pipe.image_processor.postprocess(image_tensor, output_type="pil")[0]
+                del image_tensor, scaled_latents, latents
 
-            os.makedirs("static/base", exist_ok=True)
-            base_img.save(f"static/base/scene_{step_id}.png")
-
+            os.makedirs(folder, exist_ok=True)
             flush()
 
             # Refining
             refined_img = self._refine_seams(base_img, prompt)
+            del base_img
 
-            if self.upscaler:
-                img_cv = cv2.cvtColor(np.array(refined_img), cv2.COLOR_RGB2BGR)
-                del refined_img
-                output_cv, _ = self.upscaler.enhance(img_cv, outscale=4)
-                del img_cv
-                candidate_img = Image.fromarray(cv2.cvtColor(output_cv, cv2.COLOR_BGR2RGB))
-                del output_cv
-            else:
-                candidate_img = refined_img
-
-            os.makedirs("static/candidate", exist_ok=True)
-            file_path = f"static/candidate/scene_{step_id}.png"
-            candidate_img.save(file_path)
+            file_path = os.path.join(folder, f"scene_{step_id}.png")
+            refined_img.save(file_path)
 
             print(f"Scene {step_id} completed: {file_path}")
 
-            try:
-                if 'img_cv' in locals(): del img_cv
-                if 'output_cv' in locals(): del output_cv
-                if 'candidate_img' in locals(): del candidate_img
-                if 'refined_img' in locals(): del refined_img
-            except:
-                pass
+            del refined_img
 
             flush()
             return f"http://localhost:8000/{file_path}", file_path
@@ -272,6 +263,28 @@ class ProductionAgent:
             print(f"❌ Generation Error: {e}")
             self.control_pipe.vae.to(dtype=self.dtype)
             return None, None
+
+    def upscale_image(self, input_path, output_id):
+        """ Upscale images """
+        try:
+            img = cv2.imread(input_path)
+            if img is None: return input_path
+
+            flush()
+
+            output_cv, _ = self.upscaler.enhance(img, outscale=4)
+
+            final_folder = "static/final_images"
+            os.makedirs(final_folder, exist_ok=True)
+            final_path = os.path.join(final_folder, f"scene_{output_id}.png")
+            cv2.imwrite(final_path, output_cv)
+
+            flush()
+            return final_path
+        except Exception as e:
+            print(f"❌ Upscale Error: {e}")
+            flush()
+            return input_path
 
     def generate_music(self, prompt, style, title):
 
@@ -321,7 +334,7 @@ class ProductionAgent:
                 return "https://www.soundhelix.com/examples/mp3/SoundHelix-Song-1.mp3"
 
             poll_endpoint = f"{base_url}/generate/record-info"
-            for i in range(20):
+            for i in range(50):
                 time.sleep(10)
                 status_res = requests.get(poll_endpoint, params={"taskId": task_id}, headers=headers)
                 if status_res.status_code == 200:
@@ -330,10 +343,11 @@ class ProductionAgent:
                     status = data_obj.get("status")
                     print(f"   [Polling {i + 1}] {status}")
 
-                    if status == "SUCCESS":
+                    if status in ["SUCCESS", "FIRST_SUCCESS"]:
                         suno_data = data_obj.get("response", {}).get("sunoData", [])
                         if suno_data:
-                            return suno_data[0].get("audioUrl")
+                            url = suno_data[0].get("audioUrl")
+                            if url: return url
 
         except Exception as e:
             print(f"❌ [Suno API] Exception: {e}")
