@@ -1,127 +1,199 @@
 import os
+import json
+import uvicorn
 from dotenv import load_dotenv
-import gradio as gr
 from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
-import uvicorn
-import json
-
-
+import gradio as gr
+import asyncio
 from RAG_Agent import RAGAgent
-from Production_Agent import *
+from Production_Agent import ProductionAgent
 from Filter_Agent import FilterAgent
+from Therapsit_Agent import TherapistAgent
 
 os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
-
 load_dotenv()
 API_KEY = os.getenv("API_KEY")
 HF_TOKEN = os.getenv("HF_TOKEN")
 
-app = FastAPI()
 
+class TherapyChain:
+
+    def __init__(self, rag_agent, production_agent, filter_agent, therapist_agent):
+        self.rag = rag_agent
+        self.production = production_agent
+        self.filter = filter_agent
+        self.therapist = therapist_agent
+        self.MAX_AUDIT_RETRIES = 2
+
+    async def execute(self, user_input: str):
+        """
+        RAG - Production - Filter
+        """
+        print("🔗 [Chain] Step 1: Formulating strategy via RAG...")
+        plan, clinical_insight = self.rag.get_intervention_plan(user_input)
+
+        print("🔗 [Chain] Step 2: Generating healing music and scenes")
+        music_task = [asyncio.to_thread(self.production.generate_music,
+                                        t['music_prompt'], t['style'], t['title'])
+                      for t in plan.get('music_playlist', [])]
+
+        scene_tasks = [self.production.generate_image(
+            s['image_prompt'], s['step'], folder="static/base")
+            for s in plan.get('scenes', [])]
+
+        all_results = await asyncio.gather(*music_task, *scene_tasks)
+
+        music_urls = all_results[:len(music_task)]
+        scene_results = all_results[len(music_task):]
+
+        music_resources = []
+        for i, url in enumerate(music_urls):
+            track = plan['music_playlist'][i]
+            music_resources.append({"step": track['step'], "title": track['title'], "audio_url": url})
+
+        results_map = {}
+        for i, res in enumerate(scene_results):
+            _, local_path = res
+            scene = plan['scenes'][i]
+            results_map[scene['step']] = {
+                "scene_data": scene, "image_path": local_path,
+                "is_passed": False, "audit_report": {}, "metrics": {}
+            }
+
+        print("🔗 [Chain] Step 3: Auditing candidate scenes...")
+        retry_count = 0
+        while retry_count <= self.MAX_AUDIT_RETRIES:
+            all_passed = True
+            print(f"\n🩺 [Chain] Audition {retry_count} ")
+
+            steps_to_fix = []
+
+            for step_id, data in results_map.items():
+                if data["is_passed"]:
+                    continue
+
+                metrics = self.filter.get_physical_report(data["image_path"])
+                audit_res = self.therapist.audit_scene(
+                    data["image_path"],
+                    data["scene_data"],
+                    metrics,
+                    user_input
+                )
+
+                results_map[step_id]["audit_report"] = audit_res
+                results_map[step_id]["metrics"] = metrics
+
+                if audit_res.get("decision") == "PASS":
+                    results_map[step_id]["is_passed"] = True
+                    print(f"✅ Step {step_id}: Passed")
+                else:
+                    all_passed = False
+                    steps_to_fix.append(step_id)
+                    print(f"❌ Step {step_id}: Failed - {audit_res.get('clinical_critique')}")
+
+            if all_passed or retry_count >= self.MAX_AUDIT_RETRIES:
+                break
+
+            retry_count += 1
+
+            for step_id in steps_to_fix:
+                old_data = results_map[step_id]
+                refined_plan = self.rag.refine_intervention_plan(
+                    old_data["scene_data"],
+                    old_data["audit_report"],
+                    user_input,
+                    original_insight=clinical_insight
+                )
+                _, new_img_path = await self.production.generate_image(
+                    refined_plan['scenes'][0]['image_prompt'],
+                    f"{step_id}_retry_{retry_count}",
+                    folder="static/audit"
+                )
+
+                results_map[step_id]["image_path"] = new_img_path
+                results_map[step_id]["scene_data"] = refined_plan['scenes'][0]
+
+        final_scenes = []
+        for step_id in sorted(results_map.keys()):
+            data = results_map[step_id]
+            final_img_upscaled = self.production.upscale_image(data["image_path"], step_id)
+            final_scenes.append({
+                "step": step_id,
+                "image_path": final_img_upscaled,
+                "image_url": f"http://localhost:8000/{final_img_upscaled}",
+                "duration": data["scene_data"].get("duration", 60),
+                "audit_critique": data["audit_report"].get("clinical_critique", "Final version"),
+                "unity_config": {
+                    "kelvin": data["metrics"].get("estimated_kelvin", 4000),
+                    "intensity": data["scene_data"].get("intensity", 1.0)
+                }
+            })
+
+        final_json = {
+            "user_input": user_input,
+            "intervention_plan": final_scenes,
+            "music_playlist": music_resources,
+            "status": "Success"
+        }
+        return final_json
+
+app = FastAPI()
 latest_session_result = None
 
 rag_agent = RAGAgent(API_KEY)
 production_agent = ProductionAgent(os.getenv("SUNO_API_KEY"), os.getenv("SUNO_API_BASE"))
 filter_agent = FilterAgent(API_KEY, HF_TOKEN)
+therapist_agent = TherapistAgent(API_KEY)
 
-# Mount static file directory
-STATIC_DIRS = [
-    "static/base",
-    "static/candidate",
-    "static/final_images"
-]
+therapy_chain = TherapyChain(rag_agent, production_agent, filter_agent, therapist_agent)
 
+STATIC_DIRS = ["static/base", "static/audit", "static/final_images"]
 for folder in STATIC_DIRS:
-    if not os.path.exists(folder):
-        os.makedirs(folder)
-
+    os.makedirs(folder, exist_ok=True)
 app.mount("/static", StaticFiles(directory="static"), name="static")
+
 
 class UserRequest(BaseModel):
     description: str
 
-def run_full_intervention_pipeline(user_input: str):
-    """Execute full intervention pipeline"""
-
-    # Step1：RAG Strategy Formulation
-    plan = rag_agent.get_intervention_plan(user_input)
-
-    # Step 2: Generate matching music
-    music_resources = []
-    for track in plan.get('music_playlist', []):
-        audio_url = production_agent.generate_music(
-            track['music_prompt'],
-            track['style'],
-
-            track['title']
-        )
-        music_resources.append({
-            "step": track['step'],
-            "title": track['title'],
-            "audio_url": audio_url
-        })
-
-    # Step 3: Production generates candidate scenes
-    candidate_scenes = []
-    for scene in plan['scenes']:
-        img_url, local_path = production_agent.generate_image(scene['image_prompt'], scene['step'])
-        candidate_scenes.append({
-            "step": scene['step'],
-            "duration": scene['duration'],
-            "image_url": img_url,
-            "image_path": local_path,
-            "image_prompt": scene['image_prompt'],
-            "unity_config": {
-                "kelvin": scene['target_kelvin'],
-                "intensity": scene.get('intensity', 1.2)
-            }
-        })
-
-    # Step 4: Filter to select the final scene(Top10)
-    final_scenes = filter_agent.evaluate_scenes(user_input, candidate_scenes)
-
-    return {
-        "intervention_plan": final_scenes,
-        "music_playlist": music_resources
-    }
-
 @app.get("/get-latest-session")
 async def get_latest_session():
-    """Unity 轮询此接口获取最新生成的场景"""
-    global latest_session_result
     return latest_session_result
+
 
 @app.post("/generate-session")
 async def create_session(request: UserRequest):
-    """API interfaces for Unity or external calls"""
+    """API interface for Unity"""
+    global latest_session_result
     try:
-        final_data = run_full_intervention_pipeline(request.description)
+        final_data = await therapy_chain.execute(request.description)
+        latest_session_result = final_data
         return final_data
     except Exception as e:
         return {"error": str(e), "status": "failed"}
 
-
-def intervention_gui_logic(user_input):
+async def intervention_gui_logic(user_input):
     global latest_session_result
     if not user_input.strip():
         return [], None, gr.update(choices=[]), "Input is empty."
 
     try:
-        result = run_full_intervention_pipeline(user_input)
-
+        result = await therapy_chain.execute(user_input)
         latest_session_result = result
 
-        image_list = [s['image_url'] for s in result['intervention_plan']]
+        gallery_data = [(s['image_path'], f"Step {s['step']}: {s['audit_critique'][:30]}...") for s in
+                        result['intervention_plan']]
+
         audio_urls = [m['audio_url'] for m in result['music_playlist']]
         initial_audio = audio_urls[0] if audio_urls else None
 
         return (
-            image_list,
+            gallery_data,
             initial_audio,
             gr.update(choices=audio_urls, value=initial_audio),
-            json.dumps(result, indent=4)
+            json.dumps(result, indent=4, ensure_ascii=False)
         )
     except Exception as e:
         return [], None, gr.update(choices=[]), f"Error: {str(e)}"
@@ -201,4 +273,4 @@ with gr.Blocks(theme=theme, css=custom_css, title="LLM-Driven VR Art Therapy") a
 app = gr.mount_gradio_app(app, demo, path="/gui")
 
 if __name__ == "__main__":
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    uvicorn.run(app, host="0.0.0.0", port=8000, timeout_keep_alive=65)
