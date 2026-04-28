@@ -196,13 +196,13 @@ class ProductionAgent:
 
         return Image.fromarray(final_np)
 
-    async def generate_image(self, prompt, step_id, folder="static/base"):
+    async def generate_image(self, prompt, step_id, folder=None, filename=None):
         """ Generate custom 360 pictures with the entire pipeline """
         print(f"Starting Production for Scene {step_id}...")
 
-        boosted_prompt = ", ".join([f"({word.strip()}:1.2)" for word in prompt.split(',') if word.strip()])
-        full_prompt = (f"mypano_style, <s0><s1>, {boosted_prompt}, 360 panorama, ultra-high definition photography, "
-                       f"8K, photorealistic, seamless, eye-level view")
+        clean_prompt = prompt.replace("(", "").replace(")", "").strip()
+        full_prompt = (f"mypano_style, <s0><s1>, ({clean_prompt}:1.25), 360 panorama, high definition photography, "
+                       f"8K, photorealistic, seamless")
         neg_prompt = ("grid, tiling, blocky, distorted, deformed horizon, vertical lines, tiling, watermark, "
                       "blurry, ghosting, grey sky, flat color, color overflow, banding, compression artifacts,"
                       "nadir, zenith, polar distortion, pinched top, swirl, person, crowd, buildings")
@@ -210,6 +210,11 @@ class ProductionAgent:
         flush()
 
         try:
+            os.makedirs(folder, exist_ok=True)
+            if not filename:
+                filename = f"scene_{step_id}.png"
+            file_path = os.path.join(folder, filename)
+
             output = self.control_pipe(
                 prompt=full_prompt,
                 negative_prompt= neg_prompt,
@@ -242,14 +247,12 @@ class ProductionAgent:
                 base_img = self.control_pipe.image_processor.postprocess(image_tensor, output_type="pil")[0]
                 del image_tensor, scaled_latents, latents
 
-            os.makedirs(folder, exist_ok=True)
             flush()
 
             # Refining
             refined_img = self._refine_seams(base_img, prompt)
             del base_img
 
-            file_path = os.path.join(folder, f"scene_{step_id}.png")
             refined_img.save(file_path)
 
             print(f"Scene {step_id} completed: {file_path}")
@@ -264,7 +267,7 @@ class ProductionAgent:
             self.control_pipe.vae.to(dtype=self.dtype)
             return None, None
 
-    def upscale_image(self, input_path, output_id):
+    def upscale_image(self, input_path, output_id, folder=None ):
         """ Upscale images """
         try:
             img = cv2.imread(input_path)
@@ -274,9 +277,9 @@ class ProductionAgent:
 
             output_cv, _ = self.upscaler.enhance(img, outscale=4)
 
-            final_folder = "static/final_images"
-            os.makedirs(final_folder, exist_ok=True)
-            final_path = os.path.join(final_folder, f"scene_{output_id}.png")
+            os.makedirs(folder, exist_ok=True)
+            final_path = os.path.join(folder, f"scene_{output_id}_upscaled.png")
+
             cv2.imwrite(final_path, output_cv)
 
             flush()
@@ -288,7 +291,10 @@ class ProductionAgent:
 
     def generate_music(self, prompt, style, title):
 
-        base_url = self.suno_base.rstrip('/')
+        base_url = (self.suno_base or "").rstrip('/')
+        if not base_url:
+            print("❌ [Suno API] Base URL is missing!")
+            return "https://www.soundhelix.com/examples/mp3/SoundHelix-Song-1.mp3"
         headers = {
             "Authorization": f"Bearer {self.suno_key}",
             "Content-Type": "application/json"
