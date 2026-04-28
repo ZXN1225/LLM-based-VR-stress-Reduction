@@ -3,6 +3,7 @@ import cv2
 import base64
 import numpy as np
 from openai import OpenAI
+from litellm import completion
 
 
 class TherapistSkills:
@@ -32,14 +33,23 @@ class TherapistSkills:
             "ART_Attention_Restoration_Mechanism": {
                 "Theory": "Recovery of 'Directed Attention' through effortless fascination. For the brain to recover, an environment needs to have the following four characteristics:Being Away, Extent, Fascination, Compatibility",
                 "Cognitive_Indicators": {
-                    "Soft_Fascination": "Stimuli that capture attention without cognitive effort (e.g., rustling leaves, water ripples). Must be non-aggressive.",
-                    "Extent_and_Being_Away": "The environment must provide a sense of 'immersion in another world' to allow cognitive detachment from daily stressors.",
-                    "Complexity_Management": "Optimal Fractal Dimension (D=1.3-1.5) induces Alpha-wave brain activity. Excessive complexity (Visual Chaos) leads to sensory overload."
+                    "Soft_Fascination": "Non-kinetic or rhythmic natural stimuli (leaves, clouds) that boost Normalized Alpha brainwaves (β=0.487 for greenery). Must be non-aggressive.",
+                    "Extent_and_Being_Away": "The environment has enough scope and depth to immerse one in it to allow cognitive detachment from daily stressors.",
+                    "Complexity_Management": "Optimal Fractal Dimension (D=1.3-1.5) induces Alpha-wave brain activity. Excessive complexity (Visual Chaos) leads to sensory overload.",
+                    "Compatibility": "Environmental characteristics align with individual goals and needs. Match the scene complexity to the user's fatigue level. "
                 }
             },
             "Neuro_Aesthetics_Parameters": {
                 "Circadian_Entrainment": "High blue-light ratios (>6000K) suppress melatonin; appropriate for morning energy but detrimental for evening stress relief.",
                 "Sensory_Overload_Prevention": "Excessive saturation or chaotic spatial frequencies increase cognitive load, violating the 'Restorative' intent."
+            },
+            "Urban_Density_Mitigation": {
+                "Theory": "Pathways model linking streetscapes to stress via Perceived Oppressiveness (PO).",
+                "Key_Interventions": {
+                    "Sky_Ratio": "Maintain high sky-view factor to reduce PO and increase sense of freedom.",
+                    "Visual_Buffer": "Use Tree Canopies to shield artificial facades/buildings to lower psychological pressure.",
+                    "Detrimental_Elements": "Strictly limit vehicles and aggressive billboards which explain 50.2% of mental stress."
+                }
             },
             "Clinical_Audit_Strategies": {
                 "Anxiety_Intervention": "Focus: Limit kinetic stimuli, reduce color contrast, and emphasize 'Refuge' elements.",
@@ -48,9 +58,9 @@ class TherapistSkills:
         }
 
     @staticmethod
-    def calculate_alignment(client, prompt, user_input):
+    def calculate_alignment(client, prompt, clinical_insight):
         """Skill 3: Semantic Alignment - Quantifies intent matching"""
-        res = client.embeddings.create(input=[prompt, user_input], model="text-embedding-3-small")
+        res = client.embeddings.create(input=[prompt, clinical_insight], model="text-embedding-3-small")
         v1, v2 = res.data[0].embedding, res.data[1].embedding
         return np.dot(v1, v2) / (np.linalg.norm(v1) * np.linalg.norm(v2))
 
@@ -73,11 +83,13 @@ class TherapistSkills:
 
 
 class TherapistAgent:
-    def __init__(self, api_key):
-        self.client = OpenAI(api_key=api_key)
+    def __init__(self, api_key, openai_api, model_name="gpt-5.4"):
+        self.model = model_name
+        self.client = OpenAI(api_key=openai_api)
+        self.api_key = api_key
         self.skills = TherapistSkills()
 
-    def audit_scene(self, image_path, scene_data, physical_metrics, user_input):
+    def audit_scene(self, image_path, scene_data, physical_metrics, user_input, clinical_insight):
         """
         Multimodal Clinical Audit:
         Integrates [Visual Image] + [Physical Metrics] + [Expert Knowledge]
@@ -87,14 +99,15 @@ class TherapistAgent:
 
         # 2. RETRIEVE KNOWLEDGE & CALCULATE ALIGNMENT
         guidelines = self.skills.get_clinical_guidelines()
+        target_strategy = clinical_insight.get('search_query', user_input)
         alignment_score = self.skills.calculate_alignment(
-            self.client, scene_data['image_prompt'], user_input
+            self.client, scene_data['image_prompt'], target_strategy
         )
         saturation, contrast_ratio = self.skills.calculate_visual_metrics(image_path)
 
         # 3. CONSTRUCT MULTIMODAL EXPERT PROMPT
         system_prompt = f"""
-        You are a Senior VR Clinical Therapist specializing in stress reduction. 
+        You are a Senior VR Clinical Therapist specializing in stress reduction and Environmental Psychology. 
         Your task is to audit the generated VR environment(scene) using both visual inspection and quantitative data. If the scene is not passed,
         you need provide refining suggestion to refiner to generate images that fits more to user input and stress reduction therapy.
 
@@ -103,51 +116,58 @@ class TherapistAgent:
 
         [QUANTITATIVE DATA]:
         - Physical Metrics : {json.dumps(physical_metrics)}
-        - Semantic Alignment Score(prompt to user input): {alignment_score:.2f}
+        - Semantic Alignment Score(prompt to clinical insight/strategy): {alignment_score:.2f}
         - Visual Harmony Metrics: {json.dumps({'avg_saturation': saturation, 'rms_contrast': contrast_ratio})}
 
         [AUDIT PROTOCOL]:
-        1. SAFETY & IMMERSION: Reject if DS-Score or FAED is too low or abnormal. Visual glitches cause nausea and break the 'Being Away' state. Visual Harmony Metrics should not be too high which cause Excessive visual stimulation.
+        1. SAFETY & IMMERSION: Reject if DS-Score or Mahalanobis distance score(score = 100 * exp(-dist / tau)) is too low or abnormal.
+           Visual glitches cause nausea and break the 'Being Away' state. Visual Harmony Metrics should not be too high which cause Excessive visual stimulation.
         2. SRT/ART ANALYSIS: Use the 'Mechanism' in the Knowledge Base to explain WHY the scene works or fails. 
-           Example: Don't just say 'It's bright'; say 'The high luminance and cool color temperature may inhibit melatonin and fail to activate the parasympathetic nervous system'.
-        3. FRACTAL AUDIT: Evaluate if the 'Complexity' metric suggests restorative natural patterns or stressful visual chaos.
-        4. SOFT PASS LOGIC: If the visual content is restorative but physical metrics (like Kelvin and others) are slightly off, output "PASS" as well. 
-        5. Remember you are a professional VR Clinical Therapist. You should utilize or base on your professional knowledge base and how you think of the scene, physical metrics are for reference only. Do not rely on them too much and be too strict.
+           Prioritize spatial depth and natural patterns over color precision.
+        3. FRACTAL AUDIT: Evaluate if the 'Complexity' and 'FractalDimension' metrics suggest restorative natural patterns or stressful visual chaos.
+           AI-generated images naturally have some complexity; do not reject solely based on a high 'Fractal Dimension' if it looks like a natural forest.
+        4. SOFT PASS LOGIC: If an image is visually immersive, healing, and lacks major glitches, "PASS" it even if some metrics slightly deviate from targets.
+        5. DO NOT be a "Metric Perfectionist". If a scene is 80% good, PASS it. Remember you are a professional VR Clinical Therapist. 
+           You should utilize or base on your professional knowledge base and how you think of the scene. 
+           Quantitative metrics are reference tools, NOT absolute laws. You are auditing for THERAPEUTIC VALUE, not technical perfection.
         
         [OUTPUT FORMAT]:
         You MUST return the final audit report in a valid **JSON** format. 
         The **JSON** object must follow this structure:
         {{
             "decision": "PASS" or "FAIL"
-            "clinical_critique": "Detailed medical explanation of why it passed or failed",
+            "clinical_critique": "Medical explanation of why it passed or failed",
             "refinement_suggestion": "Specific instructions for the RAG Agent to improve the prompt/parameters",
         }}
         """
-        for attempt in range(6):
-            try:
-                response = self.client.chat.completions.create(
-                    model="gpt-4o",
-                    messages=[
-                        {"role": "system", "content": system_prompt},
-                        {
-                            "role": "user",
-                            "content": [
-                                {"type": "text", "text": f"Evaluate this scene for the user's need: {user_input}"},
-                                {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{base64_image}"}}
-                            ]
-                        }
-                    ],
-                    response_format={"type": "json_object"},
-                    timeout = 60.0
-                )
-                res_content = response.choices[0].message.content
-                return json.loads(res_content)
 
-            except Exception as e:
-                print(f"⚠️ Therapist Audit Attempt {attempt + 1} Failed: {e}")
-                if attempt == 5:
-                    return {
-                        "decision": "FAIL",
-                        "clinical_critique": "Audit failed due to API timeout or error.",
-                        "refinement_suggestion": "Retry the generation process."
-                    }
+        user_content = [
+            {
+                "type": "text",
+                "text": f"Evaluate this scene for the user's need: {user_input}"
+            },
+            {
+                "type": "image_url",
+                "image_url": {"url": f"data:image/jpeg;base64,{base64_image}"}
+            }
+        ]
+        try:
+            response = completion(
+                model=self.model,
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_content}
+                ],
+                api_key=self.api_key,
+                response_format={"type": "json_object"},
+                num_retries=3,
+                timeout=60.0
+            )
+            res_content = response.choices[0].message.content
+            return json.loads(res_content)
+
+        except Exception as e:
+            print(f"⚠️ Therapist Audit Failed: {e}")
+            return {"decision": "FAIL", "clinical_critique": f"Audit Error: {str(e)}",
+                    "refinement_suggestion": "Retry with original prompt"}
+
