@@ -9,6 +9,19 @@ import chromadb
 from chromadb.utils import embedding_functions
 from PIL import Image
 import io
+import torch
+from torchvision import models, transforms
+
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+seg_model = models.segmentation.deeplabv3_mobilenet_v3_large(weights='DeepLabV3_MobileNet_V3_Large_Weights.DEFAULT').to(device)
+seg_model.eval()
+
+preprocess = transforms.Compose([
+    transforms.Resize((520, 520)),
+    transforms.ToTensor(),
+    transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.224, 0.224, 0.225]),
+])
 
 Image.MAX_IMAGE_PIXELS = None
 
@@ -77,9 +90,9 @@ def estimate_kelvin(r, g, b):
 
 
 def calculate_visual_complexity(image):
-    """
-    """
-    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+
+    blurred = cv2.GaussianBlur(image, (5, 5), 0)
+    gray = cv2.cvtColor(blurred, cv2.COLOR_BGR2GRAY)
     dft = np.fft.fft2(gray)
     dft_shift = np.fft.fftshift(dft)
     magnitude_spectrum = 20 * np.log(np.abs(dft_shift) + 1)
@@ -91,6 +104,63 @@ def calculate_visual_complexity(image):
 
     high_freq_score = np.mean(magnitude_spectrum)
     return float(high_freq_score)
+
+
+def calculate_fractal_dimension(image):
+
+    blurred = cv2.GaussianBlur(image, (3, 3), 0)
+    gray = cv2.cvtColor(blurred, cv2.COLOR_BGR2GRAY)
+    edges = cv2.Canny(gray, 150, 250)
+
+    def count_boxes(img, k):
+        h, w = img.shape
+        h_new, w_new = (h // k) * k, (w // k) * k
+        img_cropped = img[:h_new, :w_new]
+        boxes = img_cropped.reshape(h_new // k, k, w_new // k, k)
+        return np.sum(np.any(boxes > 0, axis=(1, 3)))
+
+    p = min(edges.shape)
+    n = int(np.floor(np.log2(p)))
+    scales = 2 ** np.arange(n, 1, -1)
+    counts = [count_boxes(edges, s) for s in scales]
+
+    coeffs = np.polyfit(np.log(scales), np.log(counts), 1)
+    return float(round(-coeffs[0], 3))
+
+
+def get_semantic_segmentation_stats(image_path):
+    """
+    Get greenery_radio by semantic segmentation
+    """
+    input_image = Image.open(image_path).convert("RGB")
+    input_tensor = preprocess(input_image).unsqueeze(0).to(device)
+
+    with torch.no_grad():
+        output = seg_model(input_tensor)['out'][0]
+
+    seg_map = output.argmax(0).cpu().numpy()
+    total_pixels = seg_map.size
+    img_cv = cv2.imread(image_path)
+    img_resized = cv2.resize(img_cv, (520, 520))
+    hsv = cv2.cvtColor(img_resized, cv2.COLOR_BGR2HSV)
+    color_mask = cv2.inRange(hsv, np.array([30, 20, 20]), np.array([95, 255, 255]))
+
+    greenery_mask = ((seg_map == 0) | (seg_map == 15)) & (color_mask > 0)
+    greenery_ratio = np.sum(greenery_mask) / total_pixels
+
+    return float(greenery_ratio)
+
+
+def get_sky_mask_stats(image):
+
+    hsv = cv2.cvtColor(image, cv2.COLOR_BGR2HSV)
+    total_pixels = image.shape[0] * image.shape[1]
+
+    mask_sky = cv2.inRange(hsv, np.array([90, 15, 100]), np.array([140, 255, 255]))
+    sky_ratio = np.sum(mask_sky > 0) / total_pixels
+
+    return sky_ratio
+
 
 def get_lighting_stats(image_path):
     """
@@ -110,13 +180,14 @@ def get_lighting_stats(image_path):
 
     # --- Basic physical quantities ---
     h, w, _ = img.shape
-    y_start, y_end = int(h * 0.1), int(h * 0.9)
+    y_start, y_end = int(h * 0.2), int(h * 0.8)
     cut = img[y_start:y_end, :, :]
     lab = cv2.cvtColor(cut, cv2.COLOR_BGR2Lab)
     l, a, b_channel = cv2.split(lab)
     brightness = np.mean(l)
     contrast = np.std(l)
     complexity = calculate_visual_complexity(cut)
+    fd = calculate_fractal_dimension(cut)
 
     # --- Kelvin's estimation ---
     mask = (l> np.percentile(l, 20)) & (l < np.percentile(l, 90))
@@ -127,14 +198,11 @@ def get_lighting_stats(image_path):
     median_bgr = np.median(valid_pixels, axis=0)
     kelvin = estimate_kelvin(median_bgr[2], median_bgr[1], median_bgr[0])
 
-    # --- Other quantitative indicators ---
-    gray = cv2.cvtColor(cut, cv2.COLOR_BGR2GRAY)
-    sharpness = cv2.Laplacian(gray, cv2.CV_64F).var()
-    (B, G, R) = cv2.split(cut.astype("float"))
-    colorfulness = np.sqrt(np.var(R - G) + np.var(0.5 * (R + G) - B)) + 0.3 * np.sqrt(
-    np.mean(R - G) ** 2 + np.mean(0.5 * (R + G) - B) ** 2)
+    # --- Other ratio indicators ---
+    greenery_ratio = get_semantic_segmentation_stats(image_path)
+    sky_ratio = get_sky_mask_stats(img)
 
-    return float(brightness), float(contrast), float(sharpness), float(colorfulness), float(kelvin), float(complexity)
+    return float(brightness), float(contrast), float(greenery_ratio), float(sky_ratio), float(kelvin), float(complexity), float(fd)
 
 
 def process_and_store_dataset(folder_path):
@@ -186,7 +254,7 @@ def process_and_store_dataset(folder_path):
                     )
                     semantic = json.loads(response.choices[0].message.content)
 
-                    bright, contrast, sharp, color_score, kelvin, complexity = get_lighting_stats(path)
+                    bright, contrast, greenery, sky, kelvin, complexity, fd = get_lighting_stats(path)
 
                     # Store to vector database
                     collection.add(
@@ -195,9 +263,10 @@ def process_and_store_dataset(folder_path):
                             "filename": filename,
                             "brightness": bright,
                             "contrast": contrast,
-                            "sharpness": sharp,
-                            "colorfulness": color_score,
+                            "greenery_ratio": greenery,
+                            "sky_ratio": sky,
                             "complexity": complexity,
+                            "fractal_dimension": fd,
                             "lighting": semantic['lighting'].lower(),
                             "environment": semantic['environment'],
                             "mood": semantic['mood'],
