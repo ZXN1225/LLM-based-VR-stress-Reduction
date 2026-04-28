@@ -1,13 +1,14 @@
 import chromadb
 from chromadb.utils import embedding_functions
-from openai import OpenAI
+from litellm import completion
 import json
 
 class RAGAgent:
-    def __init__(self, api_key, db_path="./PictureBase"):
-        self.client = OpenAI(api_key=api_key)
+    def __init__(self, api_key,  chroma_api, model_name="gpt-5.4", db_path="./PictureBase"):
+        self.api_key = api_key
+        self.model = model_name
         self.emb_fn = embedding_functions.OpenAIEmbeddingFunction(
-            api_key=api_key,
+            api_key=chroma_api,
             model_name="text-embedding-3-small"
         )
         self.db_client = chromadb.PersistentClient(path=db_path)
@@ -22,7 +23,7 @@ class RAGAgent:
         """
         reasoning_prompt = f"""
         You are a professional Psychologist and Clinical Environment Analyst/Strategist. 
-        Analyze the user's stress: "{user_input}"
+        Analyze the user's stress based on input.
 
         According to SRT (Stress Reduction Theory) and ART (Attention Restoration Theory):
         1. Identify the stress type (e.g., Cognitive Fatigue, High Anxiety, Seasonal Depression .... - Define this by yourself).
@@ -41,10 +42,22 @@ class RAGAgent:
         }}
         The target_physics contains any elements that you think is helpful for RAG agent to search.
         """
-        response = self.client.chat.completions.create(
-            model="gpt-4o",
-            messages=[{"role": "user", "content": reasoning_prompt}],
-            response_format={"type": "json_object"}
+
+        user_context = [
+            {
+                "type": "text",
+                "text": f"User input: {user_input}"
+            }]
+
+        response = completion(
+            model=self.model,
+            messages=[
+                {"role": "system", "content": reasoning_prompt},
+                {"role": "user", "content": user_context}
+            ],
+            api_key=self.api_key,
+            response_format={"type": "json_object"},
+            num_retries= 3
         )
         return json.loads(response.choices[0].message.content)
 
@@ -76,12 +89,14 @@ class RAGAgent:
                 f"Description: {search_results['documents'][0][i]}\n"
                 f"Environment: {meta.get('environment', 'Unknown')}\n"
                 f"Mood Tags: {meta.get('mood', 'N/A')}\n"
+                f"Psychological: {meta.get('psychological', 'N/A')}\n"
                 f"Physics: Kelvin={meta.get('estimated_kelvin', 6500):.0f}K, "
                 f"Brightness={meta.get('brightness', 128):.1f}, "
-                f"Colorfulness={meta.get('colorfulness', 0):.1f}\n"
-                f"Sharpness={meta.get('sharpness', 0):.1f}\n"
+                f"SkyRatio={meta.get('sky_ratio', 0):.2f}\n"
+                f"GreeneryRatio={meta.get('greenery_ratio', 0):.2f}\n"
                 f"Contrast={meta.get('contrast', 0):.1f}\n"
                 f"Complexity={meta.get('complexity', 0):.1f}\n"
+                f"FractalDimension={meta.get('fractal_dimension', 0):.2f}\n"
                 f"Objects: {meta.get('objects', 'N/A')}"
                 f"  Filename: {meta['filename']}"
             )
@@ -91,7 +106,7 @@ class RAGAgent:
 
         # Define the system prompt
         system_prompt = f"""
-        You are a VR Stress Management Expert. You will receive a student's stress description {user_input}
+        You are a VR Stress Management Expert. You will receive a student's stress description
         and matching examples from our validated 360° nature database:
         [CLINICAL STRATEGY]: 
         Based on analysis, the user is experiencing {clinical_insight['stress_analysis']}. 
@@ -103,13 +118,13 @@ class RAGAgent:
 
         SCIENTIFIC CONSTRAINTS:
         - Use the information from the database examples as a baseline for new generation.
-        - Specifically, aim for 3000K-4500K for virtual sunlight to maximize anxiolytic effects(Kelvin number should better be mentioned in each image prompt).
+        - Specifically, aim for 3000K-4500K for virtual sunlight to maximize anxiolytic effects(Kelvin number or lighting condition should better be mentioned in each image prompt).
         - If user mentions 'dark', 'winter', or 'low energy' that indicate they need more brightness, prioritize 'Warm' lighting scenes.
         - Compare the 'Original Kelvin' of the reference image. If it's too high (cool), 
           instruct the VR system to override it with a target_kelvin between 3200K-4000K.
         - Avoid using overly bright colors which can cause colorful chaos.
         - Your outputs should refer to 'Database Context' in some extents.
-        - Image prompt must be highly concise (STRICTLY MAX 25 WORDS).
+        - Image prompt must be highly concise (NOT exceeding 40 tokens).
         - Focus only on images. Do not include words like '360', 'panorama', or 'lighting' here as they are added automatically.        
         - MUSIC GENERATION: You must suggest exactly 2 music tracks for the 300s session, each track should last about 150s.
         - Provide a 'music_prompt' for Suno API. It should be instrumental, focused on relaxation (e.g., "Ambient piano with soft wind sounds, 432Hz, meditative, slow tempo").
@@ -135,15 +150,22 @@ class RAGAgent:
         """
 
         # Execution reasoning
-        user_context = f"User Input: {user_input}\n\n"
+        user_context = [
+            {
+                "type": "text",
+                "text": f"User Input: {user_input}\n\n",
+            }
+        ]
 
-        response = self.client.chat.completions.create(
-            model="gpt-4o",
+        response = completion(
+            model=self.model,
             messages=[
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_context}
             ],
-            response_format={"type": "json_object"}
+            api_key= self.api_key,
+            response_format={"type": "json_object"},
+            num_retries=3
         )
 
         return json.loads(response.choices[0].message.content), clinical_insight
@@ -170,10 +192,10 @@ class RAGAgent:
         your task is to REWRITE the image prompt to fix the issues while staying under the token limit.
         STRICT RULES:
         1. COMPRESSION: Do not simply add feedback to the old prompt. REWRITE it into a single, cohesive sentence.
-        2. TOKEN LIMIT: The total prompt MUST NOT exceed 60 tokens to ensure compatibility with CLIP.
-        3. REMOVE REDUNDANCY: Delete flowery adjectives. Instead of "a sense of calm and comforting stillness," use "serene, tranquil."
-        4. STRUCTURE: Keep the most important visual changes at the BEGINNING.
-        5. NO WEIGHTS: Do not use (word:weight) syntax here; the Production Agent will handle that.
+        2. TOKEN LIMIT: Image prompt must be concise. The total prompt MUST NOT exceed 40 tokens to ensure compatibility with CLIP.
+        3. REMOVE REDUNDANCY: Delete flowery adjectives. (Instead of "a sense of calm and comforting stillness," use "serene, tranquil.")
+        4. STRUCTURE: Keep the most important visual changes at the BEGINNING. Focus only on images. Do not include words like '360', 
+        'panorama', or 'lighting' here as they are added automatically. 
               
         The output format should remain the same **JSON** format:
         {{
@@ -188,15 +210,21 @@ class RAGAgent:
             ]
         }}     
         """
-
-        response = self.client.chat.completions.create(
-            model="gpt-4o",
+        user_context = [
+            {
+                "type": "text",
+                "text": f"Previous: {original_scene}. New Context from database: {context}. Original user input: {user_input}"
+            }
+        ]
+        response = completion(
+            model=self.model,
             messages=[
                 {"role": "system", "content": system_prompt},
-                {"role": "user",
-                 "content": f"Previous: {original_scene}. New Context from database: {context}. Original user input: {user_input}"},
+                {"role": "user", "content": user_context}
             ],
-            response_format={"type": "json_object"}
+            api_key= self.api_key,
+            response_format={"type": "json_object"},
+            num_retries=3
         )
         # Returns a single refined scene object
         return json.loads(response.choices[0].message.content)
