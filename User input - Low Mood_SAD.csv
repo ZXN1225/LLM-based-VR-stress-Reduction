@@ -1,0 +1,9 @@
+ID,User Text,,,,,,,,,,,Ground Truth Hints
+LM_01,"Working alone in this city, coming home to an empty room after get off work, loneliness seeps into every corner of my body",,,,,,,,,,,"The warm glow of a campfire, or natural light tinged with the aroma of smoke"
+LM_02,The long winter has lasted for three months now. It gets dark so early here; I've almost forgotten what it feels like to have the sun on my skin,,,,,,,,,,,"Simulated tropical beach, with strong contrasts of sunlight and shadow"
+LM_03,"I just went through a breakup, and I feel like my heart is broken beyond repair. I have no motivation to do anything",,,,,,,,,,,Vibrant natural scenes (such as budding in spring) suggest cycles and new life
+LM_04,"Yesterday, all my friends were having a get-together, but I was stuck at home because I was sick. This feeling of being abandoned was painful",,,,,,,,,,,Simulate a cozy outdoor afternoon to increase the visual sense of "connection"
+LM_05,"I feel like crying late at night, feeling like I've accomplished nothing and that the future is bleak",,,,,,,,,,,"Simulates the dynamic transition of color temperature from cool to warm, reflecting the first light of dawn"
+LM_06,"I've been unemployed for two months, and I feel like a useless person. All I want to do every day is lie in the dark.",,,,,,,,,,,Bright morning light (Circadian Entrainment) encourages wakefulness
+LM_07,"I've been under a lot of stress lately, and I've been having trouble sleeping, which makes me very tired and tense during the day",,,,,,,,,,,"Simulates bright sunlight, high brightness, orange hue"
+LM_08,"Lately, it's been gloomy and rainy most of the time, and I've been doing my homework indoors most of the time. Life feels a bit dull.",,,,,,,,,,,"High color saturation, richly colored flowers or sunsets"
