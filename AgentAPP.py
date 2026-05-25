@@ -11,8 +11,8 @@ import gradio as gr
 import asyncio
 from RAG_Agent import RAGAgent
 from Production_Agent import ProductionAgent
-from Filter_Agent import FilterAgent
-from Therapsit_Agent import TherapistAgent
+from MetricsToolBox import ToolBox
+from Auditing_Agent import AuditingAgent
 
 os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
 load_dotenv()
@@ -39,7 +39,7 @@ class TherapyChain:
         self.openai_api = os.getenv("CHROMA_OPENAI_API_KEY")
 
         self.rag = RAGAgent(self.api_key, self.openai_api, model_name=model_name)
-        self.therapist = TherapistAgent(self.api_key, self.openai_api, model_name=model_name)
+        self.therapist = AuditingAgent(self.api_key, self.openai_api, model_name=model_name)
         if shared_production:
             self.production = shared_production
         else:
@@ -51,7 +51,7 @@ class TherapyChain:
         if shared_filter:
             self.filter = shared_filter
         else:
-            self.filter = FilterAgent(hf_token=self.hf_token)
+            self.filter = ToolBox(hf_token=self.hf_token)
         self.MAX_AUDIT_RETRIES = 3
 
     async def execute(self, user_input: str, case_id: int = 0):
@@ -92,14 +92,6 @@ class TherapyChain:
             filename=f"step_{s['step']}_init.jpg"
         ) for s in plan.get('scenes', [])]
 
-        for s in plan.get('scenes', []):
-            session_logs["iteration_history"].append({
-                "round": 0,
-                "step": s['step'],
-                "prompt": s['image_prompt'],
-                "audit": None,
-                "metrics": None
-            })
         all_results = await asyncio.gather(*music_task, *scene_tasks)
 
         music_urls = all_results[:len(music_task)]
@@ -116,8 +108,12 @@ class TherapyChain:
             _, local_path = res
             scene = plan['scenes'][i]
             results_map[scene['step']] = {
-                "scene_data": scene, "image_path": local_path,
-                "is_passed": False, "audit_report": {}, "metrics": {}
+                "scene_data": scene,
+                "image_path": local_path,
+                "is_passed": False,
+                "audit_report": {},
+                "metrics": {},
+                "last_suggestion": None
             }
 
         print("🔗 [Chain] Step 3: Auditing candidate scenes...")
@@ -132,22 +128,42 @@ class TherapyChain:
                 if data["is_passed"]:
                     continue
 
-                metrics = self.filter.get_physical_report(data["image_path"])
-                audit_res = self.therapist.audit_scene(
-                    data["image_path"],
-                    data["scene_data"],
-                    metrics,
-                    user_input,
-                    clinical_insight
-                )
+                audit_res = None
+                max_api_retries = 2
+                for i in range(max_api_retries):
+                    try:
+                        metrics = self.filter.get_physical_report(data["image_path"])
+                        audit_res = self.therapist.audit_scene(
+                            data["image_path"], data["scene_data"], metrics, user_input, clinical_insight
+                        )
+                        if audit_res: break
+                    except Exception as api_err:
+                        print(f"⚠️ API Attempt {i + 1} failed: {api_err}. Retrying...")
+                        await asyncio.sleep(2)
+
+                if isinstance(audit_res, list):
+                    audit_res = audit_res[0] if len(audit_res) > 0 else {}
+
+                if not isinstance(audit_res, dict):
+                    audit_res = {"decision": "FAIL", "clinical_critique": "Model Output Error"}
 
                 results_map[step_id]["audit_report"] = audit_res
                 results_map[step_id]["metrics"] = metrics
+                results_map[step_id]["last_suggestion"] = audit_res.get(
+                    "refinement_suggestion", "No suggestion"
+                )
 
-                for entry in session_logs["iteration_history"]:
-                    if entry["round"] == retry_count and entry["step"] == step_id:
-                        entry["audit"] = audit_res
-                        entry["metrics"] = metrics
+                session_logs["iteration_history"].append({
+                    "type": "audit",
+                    "round": retry_count,
+                    "step": step_id,
+                    "prompt": data["scene_data"]['image_prompt'],
+                    "image_path": data["image_path"],
+                    "metrics": metrics,
+                    "audit_decision": audit_res.get("decision"),
+                    "clinical_critique": audit_res.get("clinical_critique"),
+                    "refinement_suggestion": audit_res.get("refinement_suggestion")
+                })
 
                 if audit_res.get("decision") == "PASS":
                     results_map[step_id]["is_passed"] = True
@@ -171,24 +187,37 @@ class TherapyChain:
                     user_input,
                     original_insight=clinical_insight
                 )
-                session_logs["iteration_history"].append({
-                    "round": retry_count,
-                    "step": step_id,
-                    "prompt": refined_plan['scenes'][0]['image_prompt'],
-                    "audit": None,
-                    "metrics": None
-                })
+                if isinstance(refined_plan, list) and len(refined_plan) > 0:
+                    refined_plan = refined_plan[0]
+
+                if not isinstance(refined_plan, dict) or 'scenes' not in refined_plan:
+                    print(f"⚠️ RAG Refine Format Error for Step {step_id}, using fallback.")
+                    refined_plan = {'scenes': [old_data["scene_data"]]}
+
+                current_suggestion = old_data["last_suggestion"] or "Corrective iteration"
+                new_prompt = refined_plan['scenes'][0]['image_prompt']
 
                 _, new_img_path = await self.production.generate_image(
-                    refined_plan['scenes'][0]['image_prompt'],
+                    new_prompt,
                     step_id,
                     folder=path_audit,
                     filename=f"step_{step_id}_retry_{retry_count}.jpg"
                 )
 
                 if new_img_path:
-                    results_map[step_id]["image_path"] = new_img_path
-                    results_map[step_id]["scene_data"] = refined_plan['scenes'][0]
+                    results_map[step_id].update({
+                        "image_path": new_img_path,
+                        "scene_data": refined_plan['scenes'][0]
+                    })
+
+                    session_logs["iteration_history"].append({
+                        "type": "refine",
+                        "round": retry_count,
+                        "step": step_id,
+                        "new_prompt": new_prompt,
+                        "based_on_suggestion": current_suggestion,
+                        "audit_decision": "PENDING"
+                    })
 
         final_scenes = []
         for step_id in sorted(results_map.keys()):
@@ -212,6 +241,7 @@ class TherapyChain:
                 "image_url": f"http://localhost:8000/{case_final_path.replace(os.sep, '/')}",
                 "duration": data["scene_data"].get("duration", 60),
                 "audit_critique": data["audit_report"].get("clinical_critique", "Final version"),
+                "is_final_passed": data["is_passed"],
                 "unity_config": {
                     "kelvin": data["metrics"].get("estimated_kelvin", 4000),
                     "intensity": data["scene_data"].get("intensity", 1.0)
@@ -220,10 +250,12 @@ class TherapyChain:
 
         final_json = {
             "user_input": user_input,
+            "clinical_strategy": clinical_insight.get('search_query'),
             "intervention_plan": final_scenes,
             "music_playlist": music_resources,
             "status": "Success",
-            "model_used": self.model_name
+            "model_used": self.model_name,
+            "total_audit_rounds": retry_count
         }
         return final_json, session_logs
 
@@ -242,7 +274,7 @@ def get_shared_agents():
             suno_base_url=os.getenv("SUNO_API_BASE")
         )
     if shared_filt is None:
-        shared_filt = FilterAgent(hf_token=os.getenv("HF_TOKEN"))
+        shared_filt = ToolBox(hf_token=os.getenv("HF_TOKEN"))
     return shared_prod, shared_filt
 
 class UserRequest(BaseModel):
