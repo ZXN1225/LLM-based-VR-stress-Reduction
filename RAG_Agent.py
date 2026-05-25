@@ -22,7 +22,7 @@ class RAGAgent:
         Transform user input to clinical index
         """
         reasoning_prompt = f"""
-        You are a professional Psychologist and Clinical Environment Analyst/Strategist. 
+        You are a professional Psychologist and Restorative Environment Analyst/Strategist. 
         Analyze the user's stress based on input.
 
         According to SRT (Stress Reduction Theory) and ART (Attention Restoration Theory):
@@ -186,7 +186,7 @@ class RAGAgent:
         context = results['documents'][0]
 
         system_prompt = f"""
-        You are a Clinical Strategy Refiner. The previous image generation FAILED the therapist's audit:{feedback['clinical_critique']}
+        You are a Professional Strategy Refiner. The previous image generation FAILED the therapist's audit:{feedback['clinical_critique']}
         [ORIGINAL CLINICAL GOAL]: {json.dumps(original_insight.get('target_physics', {})) if original_insight else "None"}
         Based on the refinement suggestion:{feedback['refinement_suggestion']} and user's original input, 
         your task is to REWRITE the image prompt to fix the issues while staying under the token limit.
