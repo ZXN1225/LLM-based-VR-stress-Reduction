@@ -9,7 +9,7 @@ OUTPUT_DIR = "./train_data"
 TRIGGER_WORD = "mypano_style"
 TARGET_WIDTH = 1024
 TARGET_HEIGHT = 512
-
+Image.MAX_IMAGE_PIXELS = None
 device = "cuda" if torch.cuda.is_available() else "cpu"
 
 def process_dataset():
