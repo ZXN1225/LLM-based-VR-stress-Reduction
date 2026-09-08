@@ -1,0 +1,145 @@
+[
+  {
+    "type": "function",
+    "function": {
+      "name": "retrieve_context",
+      "description": "Retrieve global reference context from the user's stored state. Once per session, before planning.",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {},
+        "title": "NoArgs",
+        "type": "object"
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "plan_session",
+      "description": "Create and validate ten scenes and two music plans using retrieved context. Also attaches per-scene references. Once per session.",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {},
+        "title": "NoArgs",
+        "type": "object"
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "start_music",
+      "description": "Start both planned music requests in background threads. Call early after planning so music overlaps GPU work. Idempotent.",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {},
+        "title": "NoArgs",
+        "type": "object"
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "generate_scenes",
+      "description": "Generate initial images for selected not-yet-generated scene IDs and repair panorama seams. Batch eligible IDs to minimize overhead.",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {
+          "steps": {
+            "items": {
+              "type": "integer"
+            },
+            "maxItems": 10,
+            "minItems": 1,
+            "title": "Steps",
+            "type": "array"
+          }
+        },
+        "required": [
+          "steps"
+        ],
+        "title": "SceneArgs",
+        "type": "object"
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "audit_scenes",
+      "description": "Measure and visually audit selected generated, not-yet-audited candidates. Audit is mandatory before refine/finalize.",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {
+          "steps": {
+            "items": {
+              "type": "integer"
+            },
+            "maxItems": 10,
+            "minItems": 1,
+            "title": "Steps",
+            "type": "array"
+          }
+        },
+        "required": [
+          "steps"
+        ],
+        "title": "SceneArgs",
+        "type": "object"
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "refine_scenes",
+      "description": "For failed audited scenes with remaining retries, re-retrieve, rewrite prompts, regenerate and repair seams. Requires subsequent audit.",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {
+          "steps": {
+            "items": {
+              "type": "integer"
+            },
+            "maxItems": 10,
+            "minItems": 1,
+            "title": "Steps",
+            "type": "array"
+          }
+        },
+        "required": [
+          "steps"
+        ],
+        "title": "SceneArgs",
+        "type": "object"
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "inspect_session",
+      "description": "Read authoritative progress, failures and available actions without changing state.",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {},
+        "title": "NoArgs",
+        "type": "object"
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "finish_session",
+      "description": "Save best audited candidates, enhance final images, await music, export Unity-compatible JSON. All scenes must be terminal: passed, generation failed, or retry budget exhausted.",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {},
+        "title": "NoArgs",
+        "type": "object"
+      }
+    }
+  }
+]
