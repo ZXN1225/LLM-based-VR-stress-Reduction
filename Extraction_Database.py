@@ -10,18 +10,22 @@ from chromadb.utils import embedding_functions
 from PIL import Image
 import io
 import torch
-from torchvision import models, transforms
+from torchvision import models
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+seg_model = None
+preprocess = None
 
-seg_model = models.segmentation.deeplabv3_mobilenet_v3_large(weights='DeepLabV3_MobileNet_V3_Large_Weights.DEFAULT').to(device)
-seg_model.eval()
 
-preprocess = transforms.Compose([
-    transforms.Resize((520, 520)),
-    transforms.ToTensor(),
-    transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.224, 0.224, 0.225]),
-])
+def _get_segmentation_components():
+    """Load the heavy segmentation model only when greenery metrics are requested."""
+    global seg_model, preprocess
+    if seg_model is None:
+        weights = models.segmentation.DeepLabV3_MobileNet_V3_Large_Weights.DEFAULT
+        seg_model = models.segmentation.deeplabv3_mobilenet_v3_large(weights=weights).to(device)
+        seg_model.eval()
+        preprocess = weights.transforms()
+    return seg_model, preprocess
 
 Image.MAX_IMAGE_PIXELS = None
 
@@ -61,7 +65,8 @@ def estimate_kelvin(r, g, b):
     """ Estimate kelvin using McCamy's Formula """
 
     r_n, g_n, b_n = r / 255.0, g / 255.0, b / 255.0
-    if (r_n + g_n + b_n) == 0: return 6500
+    if (r_n + g_n + b_n) == 0:
+        return 6500
 
     # Gamma correction
     def to_linear(c):
@@ -85,7 +90,7 @@ def estimate_kelvin(r, g, b):
         n = (x - 0.3320) / (0.1858 - y)
         cct = 449 * (n**3) + 3525 * (n**2) + 6823.3 * n + 5524.33
         return float(np.clip(cct, 1500, 12000))
-    except:
+    except (ValueError, ZeroDivisionError, FloatingPointError):
         return 6500
 
 
@@ -124,7 +129,11 @@ def calculate_fractal_dimension(image):
     scales = 2 ** np.arange(n, 1, -1)
     counts = [count_boxes(edges, s) for s in scales]
 
-    coeffs = np.polyfit(np.log(scales), np.log(counts), 1)
+    valid = [(scale, count) for scale, count in zip(scales, counts) if count > 0]
+    if len(valid) < 2:
+        return 0.0
+    valid_scales, valid_counts = zip(*valid)
+    coeffs = np.polyfit(np.log(valid_scales), np.log(valid_counts), 1)
     return float(round(-coeffs[0], 3))
 
 
@@ -132,11 +141,12 @@ def get_semantic_segmentation_stats(image_path):
     """
     Get greenery_radio by semantic segmentation
     """
+    model, transform = _get_segmentation_components()
     input_image = Image.open(image_path).convert("RGB")
-    input_tensor = preprocess(input_image).unsqueeze(0).to(device)
+    input_tensor = transform(input_image).unsqueeze(0).to(device)
 
     with torch.no_grad():
-        output = seg_model(input_tensor)['out'][0]
+        output = model(input_tensor)['out'][0]
 
     seg_map = output.argmax(0).cpu().numpy()
     total_pixels = seg_map.size
@@ -176,23 +186,33 @@ def get_lighting_stats(image_path):
         img = cv2.imread(image_path)
 
     if img is None:
-        return 0, "unknown"
+        return 0.0, 0.0, 0.0, 0.0, 6500.0, 0.0, 0.0
 
     # --- Basic physical quantities ---
     h, w, _ = img.shape
     y_start, y_end = int(h * 0.2), int(h * 0.8)
     cut = img[y_start:y_end, :, :]
     lab = cv2.cvtColor(cut, cv2.COLOR_BGR2Lab)
-    l, a, b_channel = cv2.split(lab)
-    brightness = np.mean(l)
-    contrast = np.std(l)
+    lightness, _, _ = cv2.split(lab)
+    brightness = np.mean(lightness)
+    contrast = np.std(lightness)
     complexity = calculate_visual_complexity(cut)
     fd = calculate_fractal_dimension(cut)
 
     # --- Kelvin's estimation ---
-    mask = (l> np.percentile(l, 20)) & (l < np.percentile(l, 90))
+    mask = (lightness > np.percentile(lightness, 20)) & (lightness < np.percentile(lightness, 90))
     if not np.any(mask):
-        return 6500.0
+        greenery_ratio = get_semantic_segmentation_stats(image_path)
+        sky_ratio = get_sky_mask_stats(img)
+        return (
+            float(brightness),
+            float(contrast),
+            float(greenery_ratio),
+            float(sky_ratio),
+            6500.0,
+            float(complexity),
+            float(fd),
+        )
 
     valid_pixels = cut[mask]
     median_bgr = np.median(valid_pixels, axis=0)

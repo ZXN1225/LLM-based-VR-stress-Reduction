@@ -83,13 +83,48 @@ class AuditingSkills:
 
 
 class AuditingAgent:
+    _cached_system_prompt = None
+
     def __init__(self, api_key, openai_api, model_name="gpt-5.4"):
         self.model = model_name
         self.client = OpenAI(api_key=openai_api)
         self.api_key = api_key
         self.skills = AuditingSkills()
 
-    def audit_scene(self, image_path, scene_data, physical_metrics, user_input, clinical_insight):
+    @classmethod
+    def _static_system_prompt(cls):
+        """Stable prefix so repeated scene audits can use provider prompt caching."""
+        if cls._cached_system_prompt is None:
+            guidelines = AuditingSkills.get_clinical_guidelines()
+            cls._cached_system_prompt = f"""
+You are a Senior VR Restorative Environment Auditor specializing in stress reduction and Environmental Psychology.
+Audit the generated VR scene using visual inspection and quantitative data. If it fails, provide concise,
+actionable instructions to the scene refiner.
+
+[CLINICAL KNOWLEDGE BASE]
+{json.dumps(guidelines, indent=2, sort_keys=True)}
+
+[AUDIT PROTOCOL]
+1. SAFETY AND IMMERSION: reject catastrophic seam discontinuity, abnormal realism score, or visible glitches
+   likely to cause nausea or break immersion.
+2. PERSONALIZATION: match the supplied psychological state, preferences, sensitivities, and avoid-elements.
+3. SRT/ART: explain why the scene works or fails for this specific state.
+4. COMPLEXITY: interpret complexity and fractal metrics with the image; do not reject a natural-looking forest
+   solely because a metric is high.
+5. SOFT PASS: pass an immersive, restorative scene without major defects even when metrics slightly miss targets.
+6. Quantitative metrics are supporting evidence, not uncalibrated absolute clinical thresholds.
+
+[OUTPUT FORMAT]
+Return exactly one valid JSON object:
+{{
+  "decision": "PASS" or "FAIL",
+  "clinical_critique": "concise explanation",
+  "refinement_suggestion": "specific corrective instruction; empty when no correction is needed"
+}}
+""".strip()
+        return cls._cached_system_prompt
+
+    def audit_scene(self, image_path, scene_data, physical_metrics, user_input, clinical_insight, psych_state=None):
         """
         Multimodal Clinical Audit:
         Integrates [Visual Image] + [Physical Metrics] + [Expert Knowledge]
@@ -98,56 +133,29 @@ class AuditingAgent:
         base64_image = self.skills.encode_image(image_path)
 
         # 2. RETRIEVE KNOWLEDGE & CALCULATE ALIGNMENT
-        guidelines = self.skills.get_clinical_guidelines()
+        psych_state = psych_state or clinical_insight.get("psych_state", {}) or {}
         target_strategy = clinical_insight.get('search_query', user_input)
         alignment_score = self.skills.calculate_alignment(
             self.client, scene_data['image_prompt'], target_strategy
         )
-        saturation, contrast_ratio = self.skills.calculate_visual_metrics(image_path)
+        visual_metrics = self.skills.calculate_visual_metrics(image_path)
+        saturation = visual_metrics.get("avg_saturation", 0)
+        contrast_ratio = visual_metrics.get("rms_contrast", 0)
 
-        # 3. CONSTRUCT MULTIMODAL EXPERT PROMPT
-        system_prompt = f"""
-        You are a Senior VR Restorative Environment Auditor specializing in stress reduction and Environmental Psychology. 
-        Your task is to audit the generated VR environment(scene) using both visual inspection and quantitative data. If the scene is not passed,
-        you need to provide refining suggestions to the refiner to generate images that fits more to the user input and stress reduction therapy.
-
-        [CLINICAL KNOWLEDGE BASE]:
-        {json.dumps(guidelines, indent=2)}
-
-        [QUANTITATIVE DATA]:
-        - Physical Metrics : {json.dumps(physical_metrics)}
-        - Semantic Alignment Score(prompt to clinical insight/strategy): {alignment_score:.2f},
-        0.45 - 0.65 is CONSTRUCTIVE and POSSIBLE.
-        - Visual Harmony Metrics: {json.dumps({'avg_saturation': saturation, 'rms_contrast': contrast_ratio})}
-
-        [AUDIT PROTOCOL]:
-        1. SAFETY & IMMERSION: Reject if DS-Score or Mahalanobis distance score(score = 100 * exp(-dist / tau)) is too low or abnormal.
-           Visual glitches cause nausea and break the 'Being Away' state. Visual Harmony Metrics should not be too high which cause Excessive visual stimulation.
-        2. SRT/ART ANALYSIS: Use the 'Mechanism' in the Knowledge Base to explain WHY the scene works or fails. 
-           Prioritize spatial depth and natural patterns over color precision.
-        3. FRACTAL AUDIT: Evaluate if the 'Complexity' and 'FractalDimension' metrics suggest restorative natural patterns or stressful visual chaos.
-           AI-generated images naturally have some complexity; do not reject solely based on a high 'Fractal Dimension' if it looks like a natural forest.
-        4. SOFT PASS LOGIC: If an image is visually immersive, healing, and lacks major glitches, "PASS" it even if some metrics slightly deviate from targets.
-        5. DO NOT be a "Metric Perfectionist". If a scene is 80% good, PASS it. Remember you are a professional VR Clinical Therapist. 
-           You should utilize or base on your professional knowledge base and how you think of the scene. 
-           Quantitative metrics are reference tools, NOT absolute laws. You are auditing for THERAPEUTIC VALUE, not technical perfection.
-           But if a score is catastrophically low or if there are clear visual hallucinations, you can deicide to fail it.
-           
-        [OUTPUT FORMAT]:
-        You MUST return the final audit report in a valid **JSON** format. 
-        Besides, the clinical critique and refinement suggestion should not be too long(can be in detailed but just not be too long).
-        The **JSON** object must follow this structure:
-        {{
-            "decision": "PASS" or "FAIL"
-            "clinical_critique": "Medical explanation of why it passed or failed",
-            "refinement_suggestion": "Specific instructions for the RAG Agent to improve the prompt/parameters",
-        }}
-        """
+        # 3. Keep the system prefix static; all per-scene content belongs at the end/user turn.
+        system_prompt = self._static_system_prompt()
 
         user_content = [
             {
                 "type": "text",
-                "text": f"Evaluate this scene for the user's need: {user_input}"
+                "text": (
+                    f"Evaluate this scene for the user's original need: {user_input}\n"
+                    f"Scene data: {json.dumps(scene_data, ensure_ascii=False)}\n"
+                    f"Dialog-derived psych_state: {json.dumps(psych_state, ensure_ascii=False)}\n"
+                    f"Physical metrics: {json.dumps(physical_metrics)}\n"
+                    f"Semantic alignment score: {alignment_score:.4f}\n"
+                    f"Visual harmony metrics: {json.dumps({'avg_saturation': saturation, 'rms_contrast': contrast_ratio})}"
+                )
             },
             {
                 "type": "image_url",
@@ -167,10 +175,15 @@ class AuditingAgent:
                 timeout=120.0
             )
             res_content = response.choices[0].message.content
-            return json.loads(res_content)
+            report = json.loads(res_content)
+            if not isinstance(report, dict) or str(report.get("decision", "")).upper() not in {"PASS", "FAIL"}:
+                raise ValueError("Audit response must contain decision PASS or FAIL")
+            report["decision"] = str(report["decision"]).upper()
+            report.setdefault("clinical_critique", "")
+            report.setdefault("refinement_suggestion", "")
+            return report
 
         except Exception as e:
             print(f"⚠️ Therapist Audit Failed: {e}")
             return {"decision": "FAIL", "clinical_critique": f"Audit Error: {str(e)}",
                     "refinement_suggestion": "Retry with original prompt"}
-

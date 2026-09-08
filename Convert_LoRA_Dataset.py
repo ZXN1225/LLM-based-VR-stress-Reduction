@@ -53,7 +53,8 @@ def process_dataset():
             print(f"❌ {filename} fail: {e}")
 
     del model, processor
-    if torch.cuda.is_available(): torch.cuda.empty_cache()
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
 
 
 if __name__ == "__main__":

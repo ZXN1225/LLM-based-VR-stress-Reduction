@@ -1,0 +1,7 @@
+# Add to an existing, working GPU project environment. Full original pins remain in requirements.txt.
+fastapi==0.131.0
+uvicorn==0.41.0
+gradio==6.6.0
+pydantic==2.12.5
+python-dotenv==1.0.1
+litellm==1.83.13
