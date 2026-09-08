@@ -7,13 +7,14 @@ from diffusers import AutoencoderKL
 import pickle
 
 class ToolBox:
-    def __init__(self, hf_token, device = "cuda"):
+    def __init__(self, hf_token, device=None):
+        device = device or ("cuda" if torch.cuda.is_available() else "cpu")
         self.device = device
         self.dtype = torch.float16 if device == "cuda" else torch.float32
 
         self.vqgan = AutoencoderKL.from_pretrained(
             "madebyollin/sdxl-vae-fp16-fix",
-            use_auth_token=hf_token,
+            token=hf_token,
             torch_dtype=self.dtype
         ).to(self.device)
         self.vqgan.eval()

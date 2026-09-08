@@ -9,7 +9,7 @@ from pathlib import Path
 from PipelineGuardrails import (CrossProcessAsyncLock, append_session_record, create_session_layout,
     detect_risk_flags, new_seed, public_static_url, record_critique, remember_candidate,
     risk_blocked_result, select_best_candidate)
-from PlanSchemas import InterventionPlanSpec
+from PlanSchemas import InterventionPlanSpec, RefinementPlanSpec
 
 GPU_LOCK = CrossProcessAsyncLock()
 _shared = None
@@ -220,6 +220,7 @@ class AgentBackend:
         selected = self.select(steps, {"failed"})
         if any(d["retries"] >= self.max_retries for d in selected):
             raise ValueError("A selected scene has exhausted its retry budget")
+        revisions = []
         for data in selected:
             feedback = deepcopy(data["audit_report"])
             stagnated = data.get("is_stagnated", False)
@@ -228,7 +229,14 @@ class AgentBackend:
             plan = await asyncio.to_thread(self.rag.refine_intervention_plan, data["scene_data"], feedback,
                 self.context.get("dialog_summary", self.user_input), original_insight=self.insight,
                 psych_state=self.psych, exclude_reference_filename=data.get("reference_filename") if stagnated else None)
-            data["scene_data"] = plan["scenes"][0]
+            scene = RefinementPlanSpec.model_validate(plan).model_dump()["scenes"][0]
+            if scene["step"] != data["scene_data"]["step"]:
+                raise ValueError("Refinement must preserve the selected scene step")
+            revisions.append(scene)
+        # Commit only after every requested refinement has validated successfully.
+        for data, scene in zip(selected, revisions):
+            stagnated = data.get("is_stagnated", False)
+            data["scene_data"] = scene
             data["reference_image_path"] = data["scene_data"].get("reference_image_path")
             data["reference_filename"] = data["scene_data"].get("reference_filename")
             data["seed"] = new_seed(data["seed"], force_new_segment=stagnated)
@@ -252,10 +260,10 @@ class AgentBackend:
             if not data.get("best_candidate"):
                 continue
             select_best_candidate(data)
-            filename = f"scene_{step}.png"
+            filename = f"scene_{step}{Path(data['image_path']).suffix.lower() or '.png'}"
             final_path = os.path.join(self.paths["final"], filename)
             upscale_input = os.path.join(self.paths["upscale_input"], filename)
-            upscale_output = os.path.join(self.paths["upscale_output"], filename)
+            upscale_output = os.path.join(self.paths["upscale_output"], f"scene_{step}.png")
             shutil.copy2(data["image_path"], final_path)
             shutil.copy2(data["image_path"], upscale_input)
             s, m, a = data["scene_data"], data["metrics"], data["audit_report"]

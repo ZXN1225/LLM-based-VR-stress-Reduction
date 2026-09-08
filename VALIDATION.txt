@@ -1,0 +1,30 @@
+Validation: offline service fixtures only; not a real LLM/GPU/UI run.
+test_cross_process_lock_context (test_guardrails.AsyncLockTests.test_cross_process_lock_context) ... ok
+test_best_candidate_survives_worse_last_retry (test_guardrails.GuardrailTests.test_best_candidate_survives_worse_last_retry) ... ok
+test_completeness_is_deterministic_and_risk_blocks (test_guardrails.GuardrailTests.test_completeness_is_deterministic_and_risk_blocks) ... ok
+test_evaluation_groups_conditions (test_guardrails.GuardrailTests.test_evaluation_groups_conditions) ... ok
+test_plan_schema_rejects_duplicate_scene_steps (test_guardrails.GuardrailTests.test_plan_schema_rejects_duplicate_scene_steps) ... ok
+test_public_url_is_relative (test_guardrails.GuardrailTests.test_public_url_is_relative) ... ok
+test_repeated_critique_triggers_stagnation (test_guardrails.GuardrailTests.test_repeated_critique_triggers_stagnation) ... ok
+test_risk_gate_combines_state_and_keywords (test_guardrails.GuardrailTests.test_risk_gate_combines_state_and_keywords) ... ok
+test_session_layouts_are_isolated (test_guardrails.GuardrailTests.test_session_layouts_are_isolated) ... ok
+test_cancel_does_not_release_gpu_while_thread_is_running (test_tool_agent.CancellationTests.test_cancel_does_not_release_gpu_while_thread_is_running) ... ok
+test_cancelled_waiter_does_not_strand_lock (test_tool_agent.CancellationTests.test_cancelled_waiter_does_not_strand_lock) ... ok
+test_invalid_steps_and_extra_parameters_rejected (test_tool_agent.SchemaTests.test_invalid_steps_and_extra_parameters_rejected) ... ok
+test_cannot_skip_audit_or_finish_early (test_tool_agent.WorkflowTests.test_cannot_skip_audit_or_finish_early) ... ok
+test_different_scene_batches_are_allowed (test_tool_agent.WorkflowTests.test_different_scene_batches_are_allowed) ... ok
+test_failed_batch_refinement_does_not_partially_mutate_state (test_tool_agent.WorkflowTests.test_failed_batch_refinement_does_not_partially_mutate_state) ... ok
+test_partial_generation_is_explicit (test_tool_agent.WorkflowTests.test_partial_generation_is_explicit) ... ok
+test_real_dispatch_and_model_selected_order (test_tool_agent.WorkflowTests.test_real_dispatch_and_model_selected_order) ... ok
+test_retry_budget_and_best_candidate_are_preserved (test_tool_agent.WorkflowTests.test_retry_budget_and_best_candidate_are_preserved) ... ok
+test_risk_gate_precedes_services (test_tool_agent.WorkflowTests.test_risk_gate_precedes_services) ... ok
+test_unknown_tool_invalid_json_and_loop_budget (test_tool_agent.WorkflowTests.test_unknown_tool_invalid_json_and_loop_budget) ... ok
+
+----------------------------------------------------------------------
+Ran 20 tests in 3.652s
+
+OK
+
+AST parse: 20 Python files passed.
+Gradio 6.6.0 / FastAPI 0.131.0 construction and HTTP TestClient checks passed separately.
+Real LLM, Suno and GPU image generation not executed. System Python uses CPU-only torch.

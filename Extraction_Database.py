@@ -31,14 +31,19 @@ Image.MAX_IMAGE_PIXELS = None
 
 load_dotenv()
 
-API_KEY = os.getenv("API_KEY")
-client = OpenAI(api_key=API_KEY)
-db_client = chromadb.PersistentClient(path="./PictureBase")
-emb_fn = embedding_functions.OpenAIEmbeddingFunction(
-    api_key=API_KEY,
-    model_name="text-embedding-3-small"
-)
-collection = db_client.get_or_create_collection(name="nature_environments", embedding_function=emb_fn)
+def _dataset_clients():
+    """Only initialize API/database clients when building the dataset."""
+    api_key = os.getenv("API_KEY") or os.getenv("OPENAI_API_KEY")
+    embedding_key = os.getenv("CHROMA_OPENAI_API_KEY") or api_key
+    client = OpenAI(api_key=api_key)
+    db_client = chromadb.PersistentClient(path="./PictureBase")
+    emb_fn = embedding_functions.OpenAIEmbeddingFunction(
+        api_key=embedding_key, model_name="text-embedding-3-small"
+    )
+    collection = db_client.get_or_create_collection(
+        name="nature_environments", embedding_function=emb_fn
+    )
+    return client, collection
 
 
 def encode_image_to_base64(image_path):
@@ -151,7 +156,7 @@ def get_semantic_segmentation_stats(image_path):
     seg_map = output.argmax(0).cpu().numpy()
     total_pixels = seg_map.size
     img_cv = cv2.imread(image_path)
-    img_resized = cv2.resize(img_cv, (520, 520))
+    img_resized = cv2.resize(img_cv, (seg_map.shape[1], seg_map.shape[0]))
     hsv = cv2.cvtColor(img_resized, cv2.COLOR_BGR2HSV)
     color_mask = cv2.inRange(hsv, np.array([30, 20, 20]), np.array([95, 255, 255]))
 
@@ -230,6 +235,7 @@ def process_and_store_dataset(folder_path):
     Using AI agent to process data of example pictures and store them in a database
     """
 
+    client, collection = _dataset_clients()
     valid_extensions = (".jpg", ".png", ".jpeg", ".tif", ".tiff")
 
     system_prompt = """

@@ -31,7 +31,7 @@ Two input modes share one interface:
 
 The output includes scene images, audio URLs, scene durations, review results, and configuration fields intended for a Unity client. **A Unity client is not included.**
 
-> **Project status:** The refactor has passed 19 offline tests using service fixtures. Live LLM, GPU, Chroma, music-service, and browser end-to-end validation remains pending. Required reference assets and local model statistics are not bundled.
+> **Project status:** The refactor has passed 20 offline tests using service fixtures, plus Gradio construction and FastAPI HTTP smoke checks. Full dependency resolution passed on Windows / Python 3.12; this is not a clean GPU installation test. Live LLM, GPU, Chroma, music-service, and browser end-to-end validation remains pending. Required reference assets and local model statistics are not bundled.
 
 ## Highlights
 
@@ -220,7 +220,7 @@ Additional coordinator calls add overhead. This design enables model-directed ex
 
 ## Configuration
 
-See [`.env.example`](.env.example) for the full configuration template.
+See [`.env.example`](.env.example) for the configuration template, including optional image-pipeline settings. Keep existing tuned generation, seam-repair, and PhotoFinisher values when migrating; the Agent settings supplement your original `.env`, rather than replace it. Commented examples use code defaults, not a recommended quality preset.
 
 | Variable | Default | Purpose |
 |---|---|---|
@@ -303,7 +303,7 @@ python -m unittest discover -s tests -v
 python -m compileall -q .
 ```
 
-The recorded validation run passed **19 tests** covering state/risk rules, schemas, session isolation, tool dispatch, tool-message pairing, scene batching, retry limits, best-candidate restoration, partial outputs, background overlap, and cancellation/lock behavior. See [`VALIDATION.txt`](VALIDATION.txt).
+The recorded validation run passed **20 tests** covering state/risk rules, schemas, session isolation, tool dispatch, tool-message pairing, scene batching, atomic batch refinement, retry limits, best-candidate restoration, partial outputs, export extensions, background overlap, and cancellation/lock behavior. Gradio 6.6.0 construction, HTTP responses for `/gui/`, `/gui/config`, `/openapi.json`, request validation and mode callbacks were also checked. See [`VALIDATION.txt`](VALIDATION.txt).
 
 The orchestration tests execute the real coordinator and backend against simulated model, image, music, and review services. They do not establish live provider compatibility, visual quality, browser behavior, or clinical effectiveness.
 
